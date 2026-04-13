@@ -68,7 +68,7 @@ async function runSimulation() {
     };
 
     try {
-        const response = await fetch('http://127.0.0.1:5000/simulate', {
+        const response = await fetch('https://invest-5.onrender.com/simulate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
