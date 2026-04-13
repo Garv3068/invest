@@ -164,4 +164,4 @@ def chat():
         print(f"Chat Error: {e}")
         return jsonify({"answer": f"Error: {str(e)}"})
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run()
