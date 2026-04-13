@@ -1,7 +1,7 @@
 flask
 gunicorn
-flask
-gunicorn
 flask-cors
 numpy
 yfinance
+scipy
+groq
