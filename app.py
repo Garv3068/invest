@@ -3,25 +3,24 @@ from flask_cors import CORS
 import numpy as np
 import yfinance as yf
 import requests
+import os
 from groq import Groq
 import scipy.stats as stats
 
 app = Flask(__name__)
 CORS(app)
 
-# 1. CONFIGURATION
-GROQ_API_KEY = "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"
-client = Groq(api_key=GROQ_API_KEY)
+# ===================== CONFIG =====================
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+client = None
+if GROQ_API_KEY:
+    client = Groq(api_key=GROQ_API_KEY)
 
 ASSET_STDS = {"equity": 0.18, "gold": 0.12, "bond": 0.03}
-CORRELATIONS = {
-    ("equity", "gold"): 0.10,
-    ("equity", "bond"): -0.20,
-    ("gold", "bond"): 0.15,
-}
 
+# ===================== DATA FUNCTIONS =====================
 
-# 2. DATA FETCHING FUNCTIONS
 def get_india_inflation():
     try:
         url = "https://api.worldbank.org/v2/country/IND/indicator/FP.CPI.TOTL.ZG?format=json"
@@ -37,6 +36,7 @@ def get_india_inflation():
 def get_live_market_data():
     tickers = {"equity": "^NSEI", "gold": "GC=F", "bond": "^IRX"}
     live_returns = {}
+
     try:
         for asset, sym in tickers.items():
             hist = yf.Ticker(sym).history(period="1y")
@@ -51,13 +51,15 @@ def get_live_market_data():
 
 
 def get_ai_insight(eq, gd, bd, years, final_amt, inflation, live_returns):
+    if not client:
+        return "AI insights unavailable (missing API key)."
+
     try:
-        # We replace the [...] with the actual messages list
         chat_completion = client.chat.completions.create(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a wealth mentor for an Indian investment simulator. Focus on historical data and math."
+                    "content": "You are a wealth mentor for an Indian investment simulator. Keep answers short and insightful."
                 },
                 {
                     "role": "user",
@@ -67,55 +69,66 @@ def get_ai_insight(eq, gd, bd, years, final_amt, inflation, live_returns):
             model="llama-3.1-8b-instant",
         )
         return chat_completion.choices[0].message.content
+
     except Exception as e:
         print(f"Insight Error: {e}")
-        return "Simulation complete. Ready for your questions!"
+        return "Simulation complete. AI insight unavailable."
 
-# 3. CORE API ENDPOINTS
-# 3. CORE API ENDPOINT
+
+# ===================== ROUTES =====================
+
+@app.route("/")
+def home():
+    return "Flask API is running 🚀"
+
+
 @app.route('/simulate', methods=['POST'])
 def simulate():
     try:
         data = request.json
-        # 1. Gather Inputs
+
+        # Inputs
         initial = float(data.get('initial', 100000))
         sip = float(data.get('sip', 5000))
         years = int(data.get('years', 10))
         num_sims = int(data.get('numSims', 200))
 
-        # 2. Get Live Market Stats
+        # Market data
         live_returns = get_live_market_data()
         inflation = get_india_inflation()
 
-        # 3. Allocation Weights
+        # Allocation
         eq_w = float(data.get('equity', 50)) / 100
         gd_w = float(data.get('gold', 20)) / 100
         bd_w = float(data.get('bond', 30)) / 100
 
-        # 4. Calculate Portfolio Mean and Volatility
-        mean_annual = (eq_w * live_returns['equity'] + gd_w * live_returns['gold'] + bd_w * live_returns['bond'])
+        # Mean & Volatility
+        mean_annual = (
+            eq_w * live_returns['equity'] +
+            gd_w * live_returns['gold'] +
+            bd_w * live_returns['bond']
+        )
 
-        # Calculate Variance (Simplified version)
-        vol_annual = np.sqrt((eq_w * 0.18) ** 2 + (gd_w * 0.12) ** 2 + (bd_w * 0.05) ** 2)
+        vol_annual = np.sqrt(
+            (eq_w * 0.18) ** 2 +
+            (gd_w * 0.12) ** 2 +
+            (bd_w * 0.05) ** 2
+        )
 
-        # 5. Monte Carlo Engine
+        # Monte Carlo
         months = years * 12
         m_mean = (1 + mean_annual) ** (1 / 12) - 1
         m_vol = vol_annual / np.sqrt(12)
 
-        # Generate random returns for all simulations
-        daily_returns = np.random.normal(m_mean, m_vol, (num_sims, months))
+        returns = np.random.normal(m_mean, m_vol, (num_sims, months))
         paths = np.zeros((num_sims, months + 1))
         paths[:, 0] = initial
 
         for m in range(1, months + 1):
-            # Previous balance * return + monthly SIP
-            paths[:, m] = paths[:, m - 1] * (1 + daily_returns[:, m - 1]) + sip
+            paths[:, m] = paths[:, m - 1] * (1 + returns[:, m - 1]) + sip
 
-        # 6. Prepare Data for Frontend
         final_vals = paths[:, -1]
 
-        # Calculate invested path (straight line)
         invested_path = [initial + (sip * m) for m in range(months + 1)]
 
         return jsonify({
@@ -127,41 +140,56 @@ def simulate():
             "best": float(np.percentile(final_vals, 95)),
             "median": float(np.percentile(final_vals, 50)),
             "worst": float(np.percentile(final_vals, 5)),
-            "total_invested": float(initial + (sip * months)),  # FIXES NaN
-            "loss_prob": float(stats.norm.cdf((0 - mean_annual * years) / (vol_annual * np.sqrt(years))) * 100),
-            "ai_advice": get_ai_insight(eq_w * 100, gd_w * 100, bd_w * 100, years, np.percentile(final_vals, 50),
-                                        inflation, live_returns)
+            "total_invested": float(initial + (sip * months)),
+            "loss_prob": float(
+                stats.norm.cdf((0 - mean_annual * years) / (vol_annual * np.sqrt(years))) * 100
+            ),
+            "ai_advice": get_ai_insight(
+                eq_w * 100, gd_w * 100, bd_w * 100,
+                years, np.percentile(final_vals, 50),
+                inflation, live_returns
+            )
         })
 
     except Exception as e:
         print(f"Server Error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
+
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
+        if not client:
+            return jsonify({"answer": "AI service not configured."})
+
         data = request.json
         user_q = data.get('question')
 
-        # FIX: Ensure no '...' are left in this list
         chat_completion = client.chat.completions.create(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are the InvestNova Mentor. Use the user's portfolio data to provide educational insights about market history and risk."
+                    "content": "You are an investment mentor. Be concise and helpful."
                 },
                 {
                     "role": "user",
-                    "content": f"Portfolio: {data['equity']}% Equity, {data['gold']}% Gold. Current Median: {data['median']}. Question: {user_q}"
+                    "content": f"Portfolio: {data['equity']}% Equity, {data['gold']}% Gold. Median: {data['median']}. Question: {user_q}"
                 }
             ],
             model="llama-3.1-8b-instant",
         )
-        answer = chat_completion.choices[0].message.content
-        return jsonify({"answer": answer})
+
+        return jsonify({
+            "answer": chat_completion.choices[0].message.content
+        })
+
     except Exception as e:
-        # This will print the error to your PyCharm console for easier debugging
         print(f"Chat Error: {e}")
         return jsonify({"answer": f"Error: {str(e)}"})
-if __name__ == '__main__':
-    app.run()
+
+
+# ===================== RUN =====================
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
